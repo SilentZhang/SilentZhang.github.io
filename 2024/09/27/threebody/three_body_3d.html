@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三维多体运动模拟 (Three.js)</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111; /* 修改背景颜色 */
+            cursor: grab; /* 鼠标默认样式 */
+        }
+
+        body.grabbing {
+            cursor: grabbing; /* 鼠标拖拽时样式 */
+        }
+    </style>
+</head>
+<body>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const G = 0.1; // 万有引力常数
+        const bodies = [];
+        const trailMaterials = {}; // 存储轨迹材质
+
+        // 创建网格辅助线
+        const axes = new THREE.AxesHelper(100);
+        scene.add(axes);
+        const gridHelper = new THREE.GridHelper(100, 100, 0x2C2C2C, 0x888888 );
+        // gridHelper.rotation.x = THREE.MathUtils.degToRad(15); // 设置旋转角度
+        // gridHelper.rotation.y = THREE.MathUtils.degToRad(-15); // 设置旋转角度
+        // gridHelper.rotation.z = THREE.MathUtils.degToRad(15); // 设置旋转角度
+        //scene.add(gridHelper);
+
+        // 创建平面
+        const planeMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.1 }); // 白色半透明
+        const planeGeometry = new THREE.PlaneGeometry(200, 200);
+
+        const xyPlane = new THREE.Mesh(planeGeometry, planeMaterial.clone());
+        xyPlane.rotation.x = -Math.PI / 2;
+        scene.add(xyPlane);
+
+        const yzPlane = new THREE.Mesh(planeGeometry, planeMaterial.clone());
+        yzPlane.rotation.y = Math.PI / 2;
+        scene.add(yzPlane);
+
+        const zxPlane = new THREE.Mesh(planeGeometry, planeMaterial.clone());
+        zxPlane.rotation.z = Math.PI / 2;
+        scene.add(zxPlane);
+
+        // 加载银河系背景图片
+        const loader = new THREE.TextureLoader();
+        const galaxyTexture = loader.load('galaxy-space-universe-andromeda-stars-og.jpg'); // 替换为你的图片路径
+
+        // 创建一个球体作为背景
+        const galaxySphere = new THREE.Mesh(
+            new THREE.SphereGeometry(500, 32, 32),
+            new THREE.MeshBasicMaterial({ map: galaxyTexture, side: THREE.BackSide })
+        );
+        scene.add(galaxySphere);
+
+        function Body(x, y, z, mass) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.mass = mass;
+            this.vx = Math.random() * 0.2 - 0.1; // 随机速度
+            this.vy = Math.random() * 0.2 - 0.1;
+            this.vz = Math.random() * 0.2 - 0.1;
+            this.radius = Math.sqrt(mass) * 0.1; // 半径与质量有关
+            this.color = `hsl(${Math.random() * 360}, 100%, 50%)`; // 
+            this.trail = []; // 每个物体的轨迹
+
+            // 创建 Three.js 物体
+            const geometry = new THREE.SphereGeometry(this.radius, 32, 32);
+            const material = new THREE.MeshBasicMaterial({ color: this.color });
+            this.mesh = new THREE.Mesh(geometry, material);
+            this.mesh.position.set(this.x, this.y, this.z);
+            scene.add(this.mesh);
+
+            // 创建轨迹线
+            const trailGeometry = new THREE.BufferGeometry();
+            const trailMaterial = new THREE.LineBasicMaterial({ color: this.color, linewidth: 2 });
+            this.trailLine = new THREE.Line(trailGeometry, trailMaterial);
+            scene.add(this.trailLine);
+            trailMaterials[this.color] = trailMaterial; // 存储轨迹材质
+        }
+
+        Body.prototype.update = function() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.z += this.vz;
+            this.mesh.position.set(this.x, this.y, this.z);
+
+            // 更新轨迹线
+            this.trail.push(new THREE.Vector3(this.x, this.y, this.z));
+            if (this.trail.length > 20) {
+                this.trail.shift(); // 保持轨迹长度
+            }
+            const trailGeometry = new THREE.BufferGeometry().setFromPoints(this.trail);
+            this.trailLine.geometry = trailGeometry;
+        };
+
+        function calculateGravity(body1, body2) {
+            const dx = body2.x - body1.x;
+            const dy = body2.y - body1.y;
+            const dz = body2.z - body1.z;
+            const distanceSq = dx * dx + dy * dy + dz * dz;
+            const distance = Math.sqrt(distanceSq);
+
+            if (distance > 0) {
+                const force = G * body1.mass * body2.mass / distanceSq;
+                const ax = force * dx / distance;
+                const ay = force * dy / distance;
+                const az = force * dz / distance;
+
+                body1.vx += ax / body1.mass;
+                body1.vy += ay / body1.mass;
+                body1.vz += az / body1.mass;
+            }
+        }
+
+        function checkCollision(body1, body2) {
+            const dx = body2.x - body1.x;
+            const dy = body2.y - body1.y;
+            const dz = body2.z - body1.z;
+            const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            return distance < body1.radius + body2.radius;
+        }
+
+        function mergeBodies(body1, body2) {
+            const combinedMass = body1.mass + body2.mass;
+            const newX = (body1.x * body1.mass + body2.x * body2.mass) / combinedMass;
+            const newY = (body1.y * body1.mass + body2.y * body2.mass) / combinedMass;
+            const newZ = (body1.z * body1.mass + body2.z * body2.mass) / combinedMass;
+
+            // 计算角动量守恒 (简化版本，仅考虑平面运动)
+            const v1x = body1.vx, v1y = body1.vy, v1z = body1.vz;
+            const v2x = body2.vx, v2y = body2.vy, v2z = body2.vz;
+            const newVx = (body1.mass * v1x + body2.mass * v2x) / combinedMass;
+            const newVy = (body1.mass * v1y + body2.mass * v2y) / combinedMass;
+            const newVz = (body1.mass * v1z + body2.mass * v2z) / combinedMass;
+
+            // 合并物体
+            scene.remove(body2.mesh);
+            body1.x = newX;
+            body1.y = newY;
+            body1.z = newZ;
+            body1.vx = newVx;
+            body1.vy = newVy;
+            body1.vz = newVz;
+            body1.mass = combinedMass;
+            body1.radius = Math.sqrt(combinedMass) * 0.2;
+            body1.mesh.geometry = new THREE.SphereGeometry(body1.radius, 32, 32);
+            body1.mesh.position.set(body1.x, body1.y, body1.z);
+
+            // 合并轨迹线
+            //body1.trail = [...body1.trail, ...body2.trail];
+            body1.trail = [];
+            const trailGeometry = new THREE.BufferGeometry().setFromPoints(body1.trail);
+            body1.trailLine.geometry = trailGeometry;
+
+            return body1;
+        }
+
+        window.addEventListener('dblclick', (event) => {
+            const mass = Math.random() * 100 + 10; // 随机质量
+            const mouseX = ((event.clientX / window.innerWidth) * 2 - 1)*20;
+            const mouseY = -((event.clientY / window.innerHeight) * 2 + 1)*20;
+            console.log(event.clientX,event.clientY);
+            console.log(mouseX,mouseY);
+            const z = 20; // 创建物体在相机前方
+
+            // 获取鼠标点击位置
+            const mouse = new THREE.Vector2();
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            // 使用射线检测获取三维坐标
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(scene.children);
+
+            if (intersects.length > 0) {
+                const point = intersects[0].point;
+                console.log("鼠标点击的三维坐标:", point.x, point.y, point.z);
+                bodies.push(new Body(point.x, point.y, point.z, mass)); 
+            }
+            // bodies.push(new Body(mouseX, mouseY, z, mass));
+        });
+
+        window.addEventListener('click', (event) => {
+            // 获取鼠标点击位置
+            const mouse = new THREE.Vector2();
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            // 使用射线检测获取三维坐标
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(scene.children);
+
+            if (intersects.length > 0) {
+                const point = intersects[0].point;
+                console.log("鼠标点击的三维坐标:", point.x, point.y, point.z);
+            }
+        });
+
+        camera.position.z = 100; // 相机位置
+        camera.position.x = 100; // 相机位置
+        camera.position.y = 100; // 相机位置
+        // 添加 OrbitControls 控件
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true; // 开启阻尼
+        controls.dampingFactor = 0.25; // 阻尼系数
+        controls.enableZoom = true; // 允许缩放
+        controls.enablePan = false; // 禁止平移
+        controls.minDistance = 5; // 最小距离
+        controls.maxDistance = 200; // 最大距离
+
+        function animate() {
+            // 检查碰撞并合并
+            for (let i = 0; i < bodies.length; i++) {
+                for (let j = i + 1; j < bodies.length; j++) {
+                    if (checkCollision(bodies[i], bodies[j])) {
+                        bodies[i] = mergeBodies(bodies[i], bodies[j]);
+                        bodies.splice(j, 1); // 删除合并的物体
+                        j--; // 调整循环索引
+                    }
+                }
+            }
+
+            // 计算所有物体之间的引力
+            for (let i = 0; i < bodies.length; i++) {
+                for (let j = i + 1; j < bodies.length; j++) {
+                    calculateGravity(bodies[i], bodies[j]);
+                }
+            }
+
+            // 更新物体
+            for (let i = 0; i < bodies.length; i++) {
+                bodies[i].update();
+            }
+
+            controls.update(); // 更新 OrbitControls
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        function updateVelocity(body1, ay, az) {
+        if (body1.mass === 0) { // 防止除以零
+            throw new Error("Mass cannot be zero.");
+        }
+        body1.vy += ay / body1.mass;
+        body1.vz += az / body1.mass;
+    }
+
+    function checkCollision(body1, body2) {
+        const dx = body2.x - body1.x;
+        const dy = body2.y - body1.y;
+        const dz = body2.z - body1.z;
+        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        return distance <= body1.radius + body2.radius; // 处理边界条件
+    }
+
+    function mergeBodies(body1, body2) {
+        const combinedMass = body1.mass + body2.mass;
+        const newX = (body1.x * body1.mass + body2.x * body2.mass) / combinedMass;
+        const newY = (body1.y * body1.mass + body2.y * body2.mass) / combinedMass;
+        const newZ = (body1.z * body1.mass + body2.z * body2.mass) / combinedMass;
+
+        const newVx = (body1.mass * body1.vx + body2.mass * body2.vx) / combinedMass;
+        const newVy = (body1.mass * body1.vy + body2.mass * body2.vy) / combinedMass;
+        const newVz = (body1.mass * body1.vz + body2.mass * body2.vz) / combinedMass;
+
+        scene.remove(body2.mesh);
+        body1.x = newX;
+        body1.y = newY;
+        body1.z = newZ;
+        body1.vx = newVx;
+        body1.vy = newVy;
+        body1.vz = newVz;
+        body1.mass = combinedMass;
+        body1.radius = Math.sqrt(combinedMass) * 0.2;
+        body1.mesh.geometry = new THREE.SphereGeometry(body1.radius, 32, 32);
+        body1.mesh.position.set(body1.x, body1.y, body1.z);
+
+        // 合并轨迹线
+        body1.trail = [];
+        const trailGeometry = new THREE.BufferGeometry().setFromPoints(body1.trail);
+        body1.trailLine.geometry = trailGeometry;
+
+        return body1;
+    }
+
+    function handleMouseClick(event, createBody) {
+        const mouse = new THREE.Vector2();
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(scene.children);
+
+        if (intersects.length > 0) {
+            const point = intersects[0].point;
+            console.log("鼠标点击的三维坐标:", point.x, point.y, point.z);
+            if (createBody) {
+                const mass = Math.random() * 100 + 10; // 随机质量
+                bodies.push(new Body(point.x, point.y, point.z, mass));
+            }
+        }
+    }
+
+    window.addEventListener('dblclick', (event) => {
+        handleMouseClick(event, true);
+    });
+
+    window.addEventListener('click', (event) => {
+        handleMouseClick(event, false);
+    });
+
+        animate();
+    </script>
+</body>
+</html>
